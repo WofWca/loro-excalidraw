@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { /* useEffect, */ useMemo, useRef, useState } from 'react'
 import '@radix-ui/themes/styles.css';
 import { Excalidraw } from '@excalidraw/excalidraw';
 import { Slider } from '@radix-ui/themes';
@@ -6,7 +6,10 @@ import { Loro, LoroList, LoroMap, OpId, toReadableVersion } from 'loro-crdt';
 import deepEqual from 'deep-equal';
 import './App.css'
 import { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types/types';
-
+// Yeah, we only need the lib for the types.
+// @ts-expect-error Why won't you accept JSDoc??
+import { serializeUpdate, deserializeUpdate } from 'webxdc-yjs-provider';
+import "webxdc-types/global";
 
 function App() {
   const excalidrawAPI = useRef<ExcalidrawImperativeAPI>();
@@ -14,25 +17,16 @@ function App() {
   const [maxVersion, setMaxVersion] = useState(-1);
   const [docSize, setDocSize] = useState(0);
   const [vv, setVV] = useState("")
-  const channel = useMemo(() => {
-    return new BroadcastChannel("temp");
-  }, []);
-  useEffect(() => {
-    return () => {
-      channel.close();
-    }
-  }, [channel]);
 
   const { doc, docElements } = useMemo(() => {
     const doc = new Loro();
-    const data = localStorage.getItem("store");
+    const snapshotFromLocalStorage = localStorage.getItem("store");
+    const lastUpdateSavedToLocalStorage = parseInt(
+      localStorage.getItem("lastUpdateSavedToLocalStorage") ?? "0"
+    );
     const docElements = doc.getList("elements");
-    let lastVersion: Uint8Array | undefined = undefined;
-    channel.onmessage = e => {
-      console.log("Event");
-      const bytes = new Uint8Array(e.data);
-      doc.import(bytes);
-    };
+    let lastSentVersion: Uint8Array | undefined = undefined;
+
     doc.subscribe((e) => {
       const version = Object.fromEntries(toReadableVersion(doc.version()));
       let vv = ""
@@ -41,10 +35,12 @@ function App() {
       }
 
       setVV(vv);
-      if (e.local) {
-        const bytes = doc.exportFrom(lastVersion);
-        lastVersion = doc.version();
-        channel.postMessage(bytes);
+      if (e.local && !e.fromCheckout) {
+        const bytes = doc.exportFrom(lastSentVersion);
+        lastSentVersion = doc.version();
+        window.webxdc.sendUpdate({
+          payload: { serializedLoroUpdate: serializeUpdate(bytes) }
+        }, '');
       }
       if (!e.fromCheckout) {
         versionsRef.current.push(doc.frontiers())
@@ -58,17 +54,42 @@ function App() {
         excalidrawAPI.current?.updateScene({ elements: docElements.getDeepValue() })
       }
     });
-    setTimeout(() => {
-      if (data && data?.length > 0) {
-        const bytes = new Uint8Array(atob(data).split("").map(function (c) { return c.charCodeAt(0) }));
-        doc.checkoutToLatest();
-        doc.import(bytes);
+
+    const handledStoredUpdatesP = window.webxdc.setUpdateListener((update) => {
+      // TODO perf: the original example app doesn't handle its own updates.
+      doc.import(
+        deserializeUpdate(update.payload.serializedLoroUpdate)
+      );
+
+      // TODO fix: but the update actually gets saved only inside of
+      // `doc.subscribe()`. Maybe it can so happen that this does get
+      // executed, but we haven't actually handled the update.
+      localStorage.setItem(
+        "lastUpdateSavedToLocalStorage",
+        update.serial.toFixed(0)
+      );
+    }, lastUpdateSavedToLocalStorage);
+
+    Promise.all([
+      handledStoredUpdatesP,
+      (async () => {
+        if (snapshotFromLocalStorage && snapshotFromLocalStorage?.length > 0) {
+          const bytes = new Uint8Array(atob(snapshotFromLocalStorage).split("").map(function (c) { return c.charCodeAt(0) }));
+          doc.checkoutToLatest();
+          doc.import(bytes);
+        }
+      })(),
+      // Wait for the UI to initialize
+      new Promise<void>(r => setTimeout(r, 100)),
+    ])
+      .then(() => {
         setMaxVersion(versionsRef.current.length - 1);
-        setVersionNum(versionsRef.current.length - 1)
-      }
-    }, 100);
+        setVersionNum(versionsRef.current.length - 1);
+
+        excalidrawAPI.current?.updateScene({ elements: docElements.getDeepValue() })
+      });
     return { doc, docElements }
-  }, [channel]);
+  }, []);
 
   const [versionNum, setVersionNum] = useState(-1);
   const lastVersion = useRef(-1);
