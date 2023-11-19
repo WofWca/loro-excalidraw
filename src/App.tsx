@@ -11,6 +11,12 @@ import { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types/types';
 import { serializeUpdate, deserializeUpdate } from 'webxdc-yjs-provider';
 import "webxdc-types/global";
 
+// TODO fix: some scripts and assets are failing to load, because by default
+// they're loaded from a 3rd party server:
+// https://docs.excalidraw.com/docs/@excalidraw/excalidraw/installation#static-assets
+// However, the board seems to work fine without them.
+// Need to include them in the build, or get rid of them.
+
 function App() {
   const excalidrawAPI = useRef<ExcalidrawImperativeAPI>();
   const versionsRef = useRef<OpId[][]>([]);
